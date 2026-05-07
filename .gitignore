@@ -1,45 +1,54 @@
+# ── NERIC Backend .gitignore ──
+
 # Virtual Environment
 venv/
 ENV/
 env/
 
-# Sensitive Data
+# Sensitive Data (Kunci database & token)
 .env
 
-# Python Cache
+# Python Cache & Compiled Files
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 
-# OS Files
-.DS_Store
-Thumbs.db
+# Binary Executables (PENTING: Biar influxdb3.exe gak ikut ke-up)
+*.exe
+*.dll
+*.so
+*.dylib
 
-# InfluxDB 3 Core - Data & Config
+# InfluxDB 3 OSS Installer & Data
+python/
 influxdb3-core*/
 influxdb3_data/
-influxdb3-data/
-*.parquet
 *.wal
+*.parquet
+*.snapshot
 
-# InfluxDB Binary & Installation
-influxdb3
-influxdb3.exe
-influxdb3-*.tar.gz
-influxdb3-*.zip
+# Dataset (Biarkan user download sendiri dari Kaggle)
+traffic.csv
+*.csv
 
-# InfluxDB Config & Token
-influxdb3-config.toml
-influxdb3_config/
-~/.influxdb3/
+# IDE & Editor Files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
 
 # Logs
 *.log
 logs/
 
-# Dataset / CSV besar
-traffic.csv
-*.csv
+# Test & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
 
-# IDE
-.vscode/
-.idea/
+# InfluxDB Licenses (Terbawa dari folder installer)
+LICENSE-APACHE
+LICENSE-MIT

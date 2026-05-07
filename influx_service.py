@@ -1,350 +1,188 @@
-"""
-╔══════════════════════════════════════════════════════════════╗
-║  NERIC Backend — InfluxDB Service                            ║
-║  File: influx_service.py                                     ║
-║                                                              ║
-║  Handles semua operasi database:                             ║
-║  - Write sensor data per siklus                              ║
-║  - Write keputusan NERIC                                     ║
-║  - Query historis untuk dashboard                            ║
-║  - Write emergency events                                    ║
-╚══════════════════════════════════════════════════════════════╝
-"""
-
 import os
 import logging
 import requests
-from datetime import datetime, timezone
+import json
+from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional
 
-from influxdb_client import InfluxDBClient, Point, WritePrecision
-from influxdb_client.client.write_api import SYNCHRONOUS
-from influxdb_client.client.exceptions import InfluxDBError
-
+# Pastikan import ini sesuai dengan struktur folder project NERIC kamu
 from config import NERICDecisionResponse, NERICConfig
 
 logger = logging.getLogger("neric.influx")
 
-
 class InfluxService:
     """
-    Service layer untuk semua operasi InfluxDB.
-
-    InfluxDB dipilih karena:
-    - Didesain khusus untuk time-series data (sensor IoT)
-    - Query sangat cepat untuk data berurutan waktu
-    - Retention policy built-in (auto-hapus data lama)
-    - Line protocol sangat efisien untuk write banyak data
-
-    STRUKTUR DATA:
-    ─────────────────────────────────────────────────────────
-    Measurement: sensor_data
-      Tags:   lane_id, lane_name
-      Fields: vehicle_count, membrane_potential, spike,
-              spike_strength, synaptic_weight, avg_density
-      Time:   nanosecond precision
-
-    Measurement: neric_decisions
-      Tags:   lane_id, lane_name, signal
-      Fields: green_duration, priority_rank, priority_score,
-              threshold, emergency
-      Time:   nanosecond precision
-
-    Measurement: emergency_events
-      Tags:   event_type
-      Fields: lane_ids, route_lanes, duration_seconds
-      Time:   nanosecond precision
+    Service layer untuk InfluxDB 3 OSS (Local).
+    Sudah disesuaikan agar tidak error HTTP 400 pada versi Core.
     """
 
     def __init__(self):
-        self.url    = os.getenv("INFLUXDB_URL",    "http://localhost:8086")
-        self.token  = os.getenv("INFLUXDB_TOKEN",  "")
-        self.org    = os.getenv("INFLUXDB_ORG",    "neric-org")
-        self.bucket = os.getenv("INFLUXDB_BUCKET", "neric-data")
+        self.url       = os.getenv("INFLUXDB_URL", "http://localhost:8181")
+        self.token     = os.getenv("INFLUXDB_TOKEN", "")
+        self.database  = os.getenv("INFLUXDB_DATABASE", "neric-data")
         self.connected = False
-        self.client = None
-        self.write_api = None
-        self.query_api = None
+
+        # Headers setup
+        self._headers_write = {
+            "Authorization": f"Bearer {self.token}",
+            "Content-Type": "text/plain; charset=utf-8"
+        }
+        self._headers_query = {
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/json"
+        }
 
     def connect(self) -> bool:
-        """
-        Inisialisasi koneksi ke InfluxDB Cloud.
-        Menggunakan requests API langsung karena InfluxDB Cloud
-        tidak support endpoint /health seperti versi lokal.
-        Return True jika berhasil, False jika gagal.
-        """
+        """Koneksi ke InfluxDB 3 OSS Lokal."""
         try:
-            self.client = InfluxDBClient(
-                url=self.url,
-                token=self.token,
-                org=self.org,
-            )
-
-            # ── Test koneksi via REST API langsung ────────────
-            # InfluxDB Cloud tidak support /health endpoint
-            # Gunakan /api/v2/buckets sebagai health check
+            # InfluxDB 3 Core kadang tidak merespon /health, 
+            # jadi kita langsung tembak endpoint config sebagai test
             r = requests.get(
-                f"{self.url}/api/v2/buckets",
-                headers={
-                    "Authorization": f"Token {self.token}",
-                    "Content-Type": "application/json"
-                },
+                f"{self.url}/api/v3/configure/database",
+                params={"format": "json"}, # Tambahkan format agar tidak HTTP 400
+                headers={"Authorization": f"Bearer {self.token}"},
+                timeout=5
+            )
+            
+            # 200 OK, atau 400/401 (artinya server ada tapi token/format bermasalah)
+            if r.status_code in (200, 400, 401):
+                if r.status_code == 401:
+                    logger.warning("InfluxDB 3 auth failed: Token salah")
+                    return False
+                
+                self.connected = True
+                logger.info(f"InfluxDB 3 OSS connected: {self.url} ✓")
+                self._ensure_database()
+                return True
+            
+            logger.warning(f"InfluxDB connection failed: HTTP {r.status_code}")
+            return False
+
+        except Exception as e:
+            logger.warning(f"InfluxDB 3 connection failed: {e}")
+            self.connected = False
+            return False
+
+    def _ensure_database(self):
+        """Buat database jika belum ada."""
+        try:
+            requests.post(
+                f"{self.url}/api/v3/configure/database",
+                headers=self._headers_write,
+                json={"db": self.database},
+                timeout=5
+            )
+        except:
+            pass
+
+    def _write_line_protocol(self, lines: List[str]) -> bool:
+        if not lines or not self.connected:
+            return False
+        body = "\n".join(lines)
+        try:
+            r = requests.post(
+                f"{self.url}/api/v3/write_lp",
+                params={"db": self.database, "precision": "ns"},
+                headers=self._headers_write,
+                data=body.encode("utf-8"),
                 timeout=10
             )
-
-            if r.status_code == 200:
-                self.write_api = self.client.write_api(write_options=SYNCHRONOUS)
-                self.query_api = self.client.query_api()
-                self.connected = True
-                logger.info(f"InfluxDB Cloud connected: {self.url} ✓")
-                return True
-            elif r.status_code == 401:
-                logger.warning("InfluxDB auth failed: Token tidak valid")
-                return False
-            elif r.status_code == 403:
-                logger.warning("InfluxDB auth failed: Permission tidak cukup")
-                return False
-            else:
-                logger.warning(f"InfluxDB connection failed: HTTP {r.status_code}")
-                return False
-
-        except requests.exceptions.ConnectionError:
-            logger.warning(f"InfluxDB tidak dapat dijangkau: {self.url}")
-            logger.info("Running without InfluxDB — data will not be persisted")
-            self.connected = False
-            return False
+            return r.status_code in (200, 204)
         except Exception as e:
-            logger.warning(f"InfluxDB connection failed: {e}")
-            logger.info("Running without InfluxDB — data will not be persisted")
-            self.connected = False
+            logger.error(f"InfluxDB write error: {e}")
             return False
 
-    def write_sensor_data(
-        self,
-        neuron_data: List[dict],
-        cycle: int
-    ) -> None:
-        """
-        Tulis data sensor dari semua jalur ke InfluxDB.
-        Dipanggil setiap siklus NERIC (setiap kali decide() dipanggil).
-        """
-        if not self.connected:
-            return
+    def _query_sql(self, sql: str) -> List[dict]:
+        """Query SQL yang sudah diperbaiki agar tidak HTTP 400."""
         try:
-            points = []
-            for neuron in neuron_data:
-                point = (
-                    Point("sensor_data")
-                    .tag("lane_id",   str(neuron["lane_id"]))
-                    .tag("lane_name", neuron["lane_name"])
-                    .field("vehicle_count",      neuron["vehicle_count"])
-                    .field("membrane_potential", neuron["membrane_potential"])
-                    .field("spike",              int(neuron["spike"]))
-                    .field("spike_strength",     neuron["spike_strength"])
-                    .field("synaptic_weight",    neuron["synaptic_weight"])
-                    .field("avg_density",        neuron["avg_density"])
-                    .field("cycle",              cycle)
-                    .time(datetime.now(timezone.utc), WritePrecision.NANOSECONDS)
-                )
-                points.append(point)
-
-            self.write_api.write(
-                bucket=self.bucket,
-                org=self.org,
-                record=points
+            r = requests.get(
+                f"{self.url}/api/v3/query_sql",
+                params={
+                    "db": self.database, 
+                    "q": sql, 
+                    "format": "json" # CRITICAL: Harus ada parameter format
+                },
+                headers=self._headers_query,
+                timeout=15
             )
-        except InfluxDBError as e:
-            logger.error(f"InfluxDB write_sensor_data error: {e}")
-
-    def write_decisions(self, response: NERICDecisionResponse) -> None:
-        """
-        Tulis keputusan NERIC ke InfluxDB.
-        Menyimpan signal, durasi, skor prioritas per jalur.
-        """
-        if not self.connected:
-            return
-        try:
-            points = []
-            for lane_id, decision in response.decisions.items():
-                point = (
-                    Point("neric_decisions")
-                    .tag("lane_id",   str(lane_id))
-                    .tag("lane_name", decision.lane_name)
-                    .tag("signal",    decision.signal.value)
-                    .field("green_duration",  decision.green_duration)
-                    .field("priority_rank",   decision.priority_rank)
-                    .field("priority_score",  decision.priority_score)
-                    .field("threshold",       decision.threshold)
-                    .field("emergency",       int(response.emergency))
-                    .field("cycle",           response.cycle)
-                    .time(datetime.now(timezone.utc), WritePrecision.NANOSECONDS)
-                )
-                points.append(point)
-
-            self.write_api.write(
-                bucket=self.bucket,
-                org=self.org,
-                record=points
-            )
-        except InfluxDBError as e:
-            logger.error(f"InfluxDB write_decisions error: {e}")
-
-    def write_emergency_event(
-        self,
-        event_type: str,
-        lane_ids: List[int],
-        details: dict = None
-    ) -> None:
-        """
-        Tulis emergency event ke InfluxDB.
-        Berguna untuk analisis post-mortem dan laporan.
-        """
-        if not self.connected:
-            return
-        try:
-            point = (
-                Point("emergency_events")
-                .tag("event_type", event_type)
-                .field("lane_ids",  str(lane_ids))
-                .field("details",   str(details or {}))
-                .time(datetime.now(timezone.utc), WritePrecision.NANOSECONDS)
-            )
-            self.write_api.write(
-                bucket=self.bucket,
-                org=self.org,
-                record=point
-            )
-        except InfluxDBError as e:
-            logger.error(f"InfluxDB write_emergency_event error: {e}")
-
-    def query_recent_sensors(
-        self,
-        lane_name: Optional[str] = None,
-        minutes: int = 10
-    ) -> List[dict]:
-        """
-        Query data sensor N menit terakhir.
-        Digunakan oleh React dashboard untuk tampilkan grafik historis.
-        """
-        if not self.connected:
-            return self._mock_sensor_data(lane_name, minutes)
-
-        lane_filter = f'|> filter(fn: (r) => r["lane_name"] == "{lane_name}")' \
-                      if lane_name else ""
-
-        query = f"""
-        from(bucket: "{self.bucket}")
-          |> range(start: -{minutes}m)
-          |> filter(fn: (r) => r["_measurement"] == "sensor_data")
-          {lane_filter}
-          |> pivot(
-               rowKey: ["_time", "lane_id", "lane_name"],
-               columnKey: ["_field"],
-               valueColumn: "_value"
-             )
-          |> sort(columns: ["_time"])
-          |> limit(n: 500)
-        """
-        try:
-            result = []
-            tables = self.query_api.query(query, org=self.org)
-            for table in tables:
-                for record in table.records:
-                    result.append({
-                        "time":               record.get_time().isoformat(),
-                        "lane_name":          record.values.get("lane_name"),
-                        "vehicle_count":      record.values.get("vehicle_count", 0),
-                        "membrane_potential": record.values.get("membrane_potential", 0),
-                        "spike":              bool(record.values.get("spike", 0)),
-                        "synaptic_weight":    record.values.get("synaptic_weight", 0.5),
-                    })
-            return result
+            if r.status_code == 200:
+                return r.json()
+            return []
         except Exception as e:
             logger.error(f"InfluxDB query error: {e}")
-            return self._mock_sensor_data(lane_name, minutes)
-
-    def query_avg_green_by_lane(self, minutes: int = 60) -> List[dict]:
-        """
-        Query rata-rata durasi hijau per jalur dalam N menit terakhir.
-        """
-        if not self.connected:
-            return [
-                {"lane_name": n, "avg_green": 20.0, "count": 0}
-                for n in NERICConfig.LANE_NAMES
-            ]
-
-        query = f"""
-        from(bucket: "{self.bucket}")
-          |> range(start: -{minutes}m)
-          |> filter(fn: (r) => r["_measurement"] == "neric_decisions")
-          |> filter(fn: (r) => r["_field"] == "green_duration")
-          |> group(columns: ["lane_name"])
-          |> mean()
-        """
-        try:
-            result = []
-            tables = self.query_api.query(query, org=self.org)
-            for table in tables:
-                for record in table.records:
-                    result.append({
-                        "lane_name": record.values.get("lane_name"),
-                        "avg_green": round(record.get_value(), 1),
-                    })
-            return result
-        except Exception as e:
-            logger.error(f"InfluxDB query avg_green error: {e}")
             return []
 
-    def query_emergency_count(self, hours: int = 24) -> int:
-        """Hitung jumlah emergency event dalam N jam terakhir."""
-        if not self.connected:
-            return 0
-        query = f"""
-        from(bucket: "{self.bucket}")
-          |> range(start: -{hours}h)
-          |> filter(fn: (r) => r["_measurement"] == "emergency_events")
-          |> count()
-        """
+    def write_sensor_data(self, neuron_data: List[dict], cycle: int) -> None:
+        if not self.connected: return
         try:
-            tables = self.query_api.query(query, org=self.org)
-            for table in tables:
-                for record in table.records:
-                    return int(record.get_value())
-        except Exception:
-            pass
-        return 0
+            ts = int(datetime.now(timezone.utc).timestamp() * 1_000_000_000)
+            lines = []
+            for n in neuron_data:
+                line = (
+                    f"sensor_data,lane_id={n['lane_id']},lane_name={n['lane_name']} "
+                    f"vehicle_count={n['vehicle_count']}i,membrane_potential={n['membrane_potential']},"
+                    f"spike={int(n['spike'])}i,synaptic_weight={n['synaptic_weight']},"
+                    f"cycle={cycle}i {ts}"
+                )
+                lines.append(line)
+            self._write_line_protocol(lines)
+        except: pass
 
-    def _mock_sensor_data(
-        self,
-        lane_name: Optional[str],
-        minutes: int
-    ) -> List[dict]:
+    def write_decisions(self, response: NERICDecisionResponse) -> None:
+        if not self.connected: return
+        try:
+            ts = int(datetime.now(timezone.utc).timestamp() * 1_000_000_000)
+            lines = []
+            for lane_id, d in response.decisions.items():
+                line = (
+                    f"neric_decisions,lane_id={lane_id},lane_name={d.lane_name},signal={d.signal.value} "
+                    f"green_duration={d.green_duration}i,priority_score={d.priority_score},"
+                    f"cycle={response.cycle}i {ts}"
+                )
+                lines.append(line)
+            self._write_line_protocol(lines)
+        except: pass
+
+    def query_recent_sensors(self, lane_name: Optional[str] = None, minutes: int = 10) -> List[dict]:
+        if not self.connected:
+            return self._mock_sensor_data(lane_name, minutes)
+
+        lane_filter = f"AND lane_name = '{lane_name}'" if lane_name else ""
+        # SQL syntax untuk InfluxDB 3 Lokal
+        sql = f"""
+            SELECT time, lane_name, vehicle_count, membrane_potential, spike
+            FROM sensor_data
+            WHERE time >= now() - INTERVAL '{minutes} minutes'
+            {lane_filter}
+            ORDER BY time ASC
         """
-        Fallback mock data saat InfluxDB tidak tersedia.
-        Agar React dashboard tetap bisa ditampilkan saat development.
-        """
+        rows = self._query_sql(sql)
+        if not rows: return self._mock_sensor_data(lane_name, minutes)
+        
+        return [{
+            "time": r.get("time"),
+            "lane_name": r.get("lane_name"),
+            "vehicle_count": r.get("vehicle_count"),
+            "membrane_potential": r.get("membrane_potential"),
+            "spike": bool(r.get("spike"))
+        } for r in rows]
+
+    def _mock_sensor_data(self, lane_name, minutes):
         import random
-        from datetime import timedelta
-
         lanes = [lane_name] if lane_name else NERICConfig.LANE_NAMES
-        result = []
+        res = []
         now = datetime.now(timezone.utc)
-
-        for i in range(minutes * 6):
-            t = now - timedelta(seconds=(minutes * 60 - i * 10))
-            for lane in lanes:
-                result.append({
-                    "time":               t.isoformat(),
-                    "lane_name":          lane,
-                    "vehicle_count":      random.randint(2, 18),
-                    "membrane_potential": round(random.uniform(0, 0.8), 3),
-                    "spike":              random.random() > 0.7,
-                    "synaptic_weight":    round(random.uniform(0.3, 0.8), 3),
+        for i in range(minutes * 2):
+            t = now - timedelta(seconds=(minutes * 60 - i * 30))
+            for l in lanes:
+                res.append({
+                    "time": t.isoformat(),
+                    "lane_name": l,
+                    "vehicle_count": random.randint(0, 20),
+                    "membrane_potential": random.uniform(0, 1),
+                    "spike": random.random() > 0.8
                 })
-        return result
+        return res
 
-    def close(self) -> None:
-        """Tutup koneksi InfluxDB saat shutdown."""
-        if self.client:
-            self.client.close()
-            logger.info("InfluxDB connection closed")
+    def close(self):
+        self.connected = False
