@@ -19,7 +19,7 @@ from typing import List, Dict, Tuple, Optional
 import asyncio
 import logging
 
-from config import NERICConfig, LaneDecision, NERICDecisionResponse, SignalState
+from config.config import NERICConfig, LaneDecision, NERICDecisionResponse, SignalState
 
 logger = logging.getLogger("neric.brain")
 

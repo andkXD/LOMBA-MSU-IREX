@@ -37,14 +37,14 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Back
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from config import (
+from config.config import (
     ManualInputRequest, EmergencyRouteRequest, SimulationRequest,
     NERICDecisionResponse, SystemStatusResponse, EmergencyRouteResponse,
     ScenarioType, NERICConfig
 )
 from brain import NERICBrain
-from influx_service import InfluxService
-from mqtt_service import MQTTService
+from services.influx_service import InfluxService
+from services.mqtt_service import MQTTService
 
 # ── Logging setup ─────────────────────────────────────────────
 logging.basicConfig(

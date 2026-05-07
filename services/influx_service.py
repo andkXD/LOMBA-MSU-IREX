@@ -6,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional
 
 # Pastikan import ini sesuai dengan struktur folder project NERIC kamu
-from config import NERICDecisionResponse, NERICConfig
+from config.config import NERICDecisionResponse, NERICConfig
 
 logger = logging.getLogger("neric.influx")
 

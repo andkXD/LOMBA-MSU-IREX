@@ -5,7 +5,8 @@ import requests
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 
-load_dotenv()
+# REVISI 1: Jalur load_dotenv diarahkan ke folder config
+load_dotenv("config/.env")
 
 # ── Konfigurasi InfluxDB 3 OSS dari .env ─────────────────────
 INFLUX_URL      = os.getenv("INFLUXDB_URL", "http://localhost:8181")
@@ -20,69 +21,49 @@ JUNCTION_MAP = {
     "4": "Barat",
 }
 
-CSV_FILE   = "traffic.csv"
+# REVISI 2: Jalur file CSV diarahkan ke folder data
+CSV_FILE   = "data/traffic.csv" 
 BATCH_SIZE = 500   
 DELAY_SEC  = 0.1   
 MAX_RETRY  = 3
+
+def parse_datetime(dt_str: str):
+    """Mengonversi string datetime menjadi nanosecond timestamp."""
+    try:
+        dt = datetime.strptime(dt_str.strip(), "%Y-%m-%d %H:%M:%S")
+        dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp() * 1_000_000_000)
+    except Exception:
+        return None
 
 def check_connection() -> bool:
     """Test koneksi ke InfluxDB 3 OSS sebelum import."""
     print("🔍 Mengecek koneksi ke InfluxDB 3 OSS...")
     try:
-        # Cek paling dasar: Health Check
         r = requests.get(f"{INFLUX_URL}/health", timeout=5)
         if r.status_code == 200:
             print(f"✅ InfluxDB 3 OSS terhubung di {INFLUX_URL}!\n")
             return True
         
-        # Backup cek: Coba akses config database dengan token
         r = requests.get(
             f"{INFLUX_URL}/api/v3/configure/database",
+            params={"format": "json"},
             headers={"Authorization": f"Bearer {INFLUX_TOKEN}"},
             timeout=5
         )
-        # HTTP 400 'missing field format' tetap kita anggap OK karena artinya server merespon token kita
         if r.status_code in (200, 400, 401):
             if r.status_code == 401:
                 print("❌ Token tidak valid! Cek kembali .env kamu.")
                 return False
             print(f"✅ InfluxDB 3 OSS terdeteksi aktif!\n")
             return True
-
-        print(f"❌ Gagal konek: HTTP {r.status_code}")
         return False
     except Exception as e:
         print(f"❌ Error koneksi: {e}")
         return False
 
-def ensure_database() -> bool:
-    """Pastikan database ada."""
-    try:
-        r = requests.post(
-            f"{INFLUX_URL}/api/v3/configure/database",
-            headers={
-                "Authorization": f"Bearer {INFLUX_TOKEN}",
-                "Content-Type": "application/json"
-            },
-            json={"db": INFLUX_DATABASE},
-            timeout=10
-        )
-        if r.status_code in (200, 201, 409):
-            print(f"✅ Database '{INFLUX_DATABASE}' siap\n")
-            return True
-        return True 
-    except:
-        return True
-
-def parse_datetime(dt_str: str):
-    try:
-        dt = datetime.strptime(dt_str.strip(), "%Y-%m-%d %H:%M:%S")
-        dt = dt.replace(tzinfo=timezone.utc)
-        return int(dt.timestamp() * 1_000_000_000)
-    except:
-        return None
-
 def write_batch(lines: list, batch_num: int) -> bool:
+    """Mengirim data batch ke InfluxDB."""
     body = "\n".join(lines)
     for attempt in range(1, MAX_RETRY + 1):
         try:
@@ -96,13 +77,15 @@ def write_batch(lines: list, batch_num: int) -> bool:
             if r.status_code in (200, 204):
                 return True
             time.sleep(DELAY_SEC)
-        except:
+        except Exception:
             time.sleep(DELAY_SEC)
     return False
 
 def import_csv():
+    """Proses utama membaca CSV dan mengirim ke InfluxDB."""
     if not os.path.exists(CSV_FILE):
         print(f"❌ File '{CSV_FILE}' tidak ditemukan!")
+        print(f"💡 Pastikan file traffic.csv ada di dalam folder 'data/'")
         return
 
     with open(CSV_FILE, "r") as f:
@@ -118,6 +101,7 @@ def import_csv():
     with open(CSV_FILE, "r") as f:
         reader = csv.DictReader(f)
         for row in reader:
+            # Fungsi parse_datetime sekarang sudah didefinisikan di atas
             ts = parse_datetime(row.get("DateTime", ""))
             if not ts: continue
             
@@ -149,6 +133,5 @@ if __name__ == "__main__":
     print("🚦" * 15 + "\n")
 
     if check_connection():
-        ensure_database()
         import_csv()
         print("\n✅ Langkah selanjutnya: jalankan backend dengan uvicorn!")
