@@ -13,3 +13,33 @@ __pycache__/
 # OS Files
 .DS_Store
 Thumbs.db
+
+# InfluxDB 3 Core - Data & Config
+influxdb3-core*/
+influxdb3_data/
+influxdb3-data/
+*.parquet
+*.wal
+
+# InfluxDB Binary & Installation
+influxdb3
+influxdb3.exe
+influxdb3-*.tar.gz
+influxdb3-*.zip
+
+# InfluxDB Config & Token
+influxdb3-config.toml
+influxdb3_config/
+~/.influxdb3/
+
+# Logs
+*.log
+logs/
+
+# Dataset / CSV besar
+traffic.csv
+*.csv
+
+# IDE
+.vscode/
+.idea/
