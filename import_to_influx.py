@@ -135,3 +135,4 @@ if __name__ == "__main__":
     if check_connection():
         import_csv()
         print("\n✅ Langkah selanjutnya: jalankan backend dengan uvicorn!")
+    

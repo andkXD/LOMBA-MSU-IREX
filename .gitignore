@@ -52,3 +52,5 @@ htmlcov/
 # InfluxDB Licenses (Terbawa dari folder installer)
 LICENSE-APACHE
 LICENSE-MIT
+
+Mosquitto/
