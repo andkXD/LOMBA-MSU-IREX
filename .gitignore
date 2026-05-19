@@ -55,3 +55,14 @@ LICENSE-MIT
 
 # Mosuitto Broker
 Mosquitto/
+
+# Aset Gambar / Screenshots (Tambahkan ini jika TIDAK mau di-push)
+*.png
+*.jpg
+*.jpeg
+
+# 3D Assets & Models (PENTING: Biar git gak ambyar/berat)
+*.glb
+*.fbx
+*.blend
+*.blend1

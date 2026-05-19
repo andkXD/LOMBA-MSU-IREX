@@ -13,24 +13,29 @@ logger = logging.getLogger("neric.influx")
 class InfluxService:
     """
     Service layer untuk InfluxDB 3 OSS (Local).
-    Sudah disesuaikan agar tidak error HTTP 400 pada versi Core.
+    Sudah disesuaikan agar tidak error HTTP 400 atau Auth Malformed pada versi Core.
     """
 
     def __init__(self):
         self.url       = os.getenv("INFLUXDB_URL", "http://localhost:8181")
-        self.token     = os.getenv("INFLUXDB_TOKEN", "")
+        self.token     = os.getenv("INFLUXDB_TOKEN", "").strip() # Bersihkan spasi/newline jika ada
         self.database  = os.getenv("INFLUXDB_DATABASE", "neric-data")
         self.connected = False
 
-        # Headers setup
-        self._headers_write = {
-            "Authorization": f"Bearer {self.token}",
-            "Content-Type": "text/plain; charset=utf-8"
-        }
-        self._headers_query = {
-            "Authorization": f"Bearer {self.token}",
-            "Accept": "application/json"
-        }
+    def _get_headers(self, content_type: Optional[str] = None) -> dict:
+        """Helper untuk membuat header dinamis. Mencegah header malformed jika token kosong."""
+        headers = {}
+        
+        # Menggunakan format 'Token <token>' yang stabil untuk InfluxDB 3 OSS lokal
+        if self.token:
+            headers["Authorization"] = f"Token {self.token}"
+            
+        if content_type:
+            headers["Content-Type"] = content_type
+        else:
+            headers["Accept"] = "application/json"
+            
+        return headers
 
     def connect(self) -> bool:
         """Koneksi ke InfluxDB 3 OSS Lokal."""
@@ -39,15 +44,15 @@ class InfluxService:
             # jadi kita langsung tembak endpoint config sebagai test
             r = requests.get(
                 f"{self.url}/api/v3/configure/database",
-                params={"format": "json"}, # Tambahkan format agar tidak HTTP 400
-                headers={"Authorization": f"Bearer {self.token}"},
+                params={"format": "json"}, 
+                headers=self._get_headers(),
                 timeout=5
             )
             
             # 200 OK, atau 400/401 (artinya server ada tapi token/format bermasalah)
             if r.status_code in (200, 400, 401):
                 if r.status_code == 401:
-                    logger.warning("InfluxDB 3 auth failed: Token salah")
+                    logger.warning("InfluxDB 3 auth failed: Token salah atau tidak berwenang")
                     return False
                 
                 self.connected = True
@@ -64,16 +69,21 @@ class InfluxService:
             return False
 
     def _ensure_database(self):
-        """Buat database jika belum ada."""
+        """Buat database jika belum ada secara aman."""
         try:
-            requests.post(
+            # Langsung POST untuk memastikan database neric-data ada.
+            # Jika sudah ada, server InfluxDB akan merespons HTTP 409 atau melempar info "already exists",
+            # kita tidak perlu memunculkan error-nya ke log utama aplikasi agar log tetap bersih.
+            r = requests.post(
                 f"{self.url}/api/v3/configure/database",
-                headers=self._headers_write,
+                headers=self._get_headers(content_type="application/json"),
                 json={"db": self.database},
                 timeout=5
             )
-        except:
-            pass
+            if r.status_code == 401:
+                logger.warning("Gagal memastikan database: Token tidak berwenang (401)")
+        except Exception as e:
+            logger.debug(f"Ensure database info: {e}")
 
     def _write_line_protocol(self, lines: List[str]) -> bool:
         if not lines or not self.connected:
@@ -83,7 +93,7 @@ class InfluxService:
             r = requests.post(
                 f"{self.url}/api/v3/write_lp",
                 params={"db": self.database, "precision": "ns"},
-                headers=self._headers_write,
+                headers=self._get_headers(content_type="text/plain; charset=utf-8"),
                 data=body.encode("utf-8"),
                 timeout=10
             )
@@ -102,7 +112,7 @@ class InfluxService:
                     "q": sql, 
                     "format": "json" # CRITICAL: Harus ada parameter format
                 },
-                headers=self._headers_query,
+                headers=self._get_headers(),
                 timeout=15
             )
             if r.status_code == 200:
